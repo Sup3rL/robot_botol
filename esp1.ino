@@ -140,24 +140,6 @@ void stopped() {
 }
 
 // =====================================================================
-// ---------- Lifter Subsystem ----------
-// =====================================================================
-void lifter_stopped() {
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN1, HIGH);
-}
-
-void lifter_down() {
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN1, LOW);
-}
-
-void lifter_up() {
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN1, HIGH);
-}
-
-// =====================================================================
 // ---------- Gripper Subsystem: MG996R Servos ----------
 // =====================================================================
 const bool GRIPPER_360 = false;
@@ -207,11 +189,7 @@ void writeJaws(bool force) {
 }
 
 void gripper_stop() {
-  if (GRIPPER_360) {
-    servoOff(CH_A);
-    servoOff(CH_B);
-  }
-  gripDir = 0;
+  if (GRIPPER_360) {servoOff(CH_A);servoOff(CH_B);}gripDir = 0;
 }
 
 void updateGripper(bool closeBtn, bool openBtn) {
@@ -252,11 +230,7 @@ void updateGripper(bool closeBtn, bool openBtn) {
 // =====================================================================
 // ---------- Remote Control Receiver (from ESP32 #2) ----------
 // =====================================================================
-void applyRemoteControl(bool up, bool down, bool left, bool right,
-                        bool l1, bool r1, bool y, bool a,
-                        bool closeGrip, bool openGrip,
-                        int mag, bool dpadUsed) {
-  updateGripper(closeGrip, openGrip);
+void applyRemoteControl(bool up, bool down, bool left, bool right,bool l1, bool r1, bool y, bool a,bool closeGrip, bool openGrip,int mag, bool dpadUsed) {updateGripper(closeGrip, openGrip);
 
   int drivePwm = 255;
   if (!dpadUsed && mag > STICK_DEADZONE) {
@@ -266,34 +240,37 @@ void applyRemoteControl(bool up, bool down, bool left, bool right,
   if (up && left) {
     pwm = drivePwm;
     diagonal_kiri_maju();
+
   } else if (up && right) {
     pwm = drivePwm;
     diagonal_kanan_maju();
+
   } else if (up) {
     pwm = drivePwm;
     maju();
+
   } else if (left) {
     pwm = drivePwm;
     bel_ki();
+
   } else if (right) {
     pwm = drivePwm;
     bel_ka();
+
   } else if (down) {
     pwm = drivePwm;
     mundur();
+
   } else if (l1) {
     pwm = 255;
     geser_kiri();
+
   } else if (r1) {
     pwm = 255;
     geser_kanan();
-  } else if (y) {
-    lifter_up();
-  } else if (a) {
-    lifter_down();
+    
   } else {
     pwm = 0;
-    lifter_stopped();
     stopped();
   }
 }
@@ -385,24 +362,6 @@ void handleSerialTuning() {
 
 void komunikasi_test() {
     // KIRIM JSON setiap 1 detik
-  if (millis() - lastSend >= 1000) {
-    lastSend = millis();
-
-    JsonDocument doc;
-    doc["device"] = "ESP32_1";
-    doc["counter"] = counter++;
-    doc["value"] = 100;
-    doc["status"] = "online";
-
-    serializeJson(doc, Serial1);
-    Serial1.println();
-
-    Serial.print("KIRIM: ");
-    serializeJson(doc, Serial);
-    Serial.println();
-  }
-
-  // TERIMA JSON dari ESP32 2
   while (Serial1.available()) {
     char c = Serial1.read();
 
@@ -411,12 +370,30 @@ void komunikasi_test() {
       DeserializationError err =
           deserializeJson(doc, rxBuffer);
 
-      if (!err) {
-        Serial.print("TERIMA: ");
-        serializeJson(doc, Serial);
-        Serial.println();
-      } else {
-        Serial.println("JSON tidak valid");
+      if (!err && strcmp(doc["src"] | "", "esp2") == 0) {
+        up        = doc["up"]    | false;
+        down      = doc["down"]  | false;
+        left      = doc["left"]  | false;
+        right     = doc["right"] | false;
+        l1        = doc["l1"]    | false;
+        r1        = doc["r1"]    | false;
+        y         = doc["y"]     | false;
+        a         = doc["a"]     | false;
+        x         = doc["x"]     | false;
+        b         = doc["b"]     | false;
+        dpadUsed  = doc["dpad"]  | false;
+        mag       = constrain(
+          doc["mag"] | 0, 0, 512
+        );
+
+        lastPacketTime = millis();
+
+        Serial.printf(
+          "U:%d D:%d L:%d R:%d | L1:%d R1:%d | "
+          "Y:%d A:%d X:%d B:%d | Dpad:%d Mag:%d\n",
+          up, down, left, right,
+          l1, r1, y, a, x, b, dpadUsed, mag
+        );
       }
 
       rxBuffer = "";
@@ -427,6 +404,16 @@ void komunikasi_test() {
         rxBuffer = "";
       }
     }
+  }
+
+  // Pengaman: jika komunikasi terputus,
+  // semua perintah remote dinonaktifkan.
+  if (millis() - lastPacketTime > 300) {
+    up = down = left = right = false;
+    l1 = r1 = false;
+    y = a = x = b = false;
+    dpadUsed = false;
+    mag = 0;
   }
 }
 
@@ -477,7 +464,6 @@ void setup() {
   ledcWrite(CH_ena, 255);
 
   stopped();
-  lifter_stopped();
   Serial.println("Ready. Waiting remote control from ESP32 #2.");
 }
 
@@ -487,7 +473,6 @@ void loop() {
 
   if (millis() - lastRemoteMs > REMOTE_TIMEOUT_MS) {
     stopped();
-    lifter_stopped();
     updateGripper(false, false);
   }
 
