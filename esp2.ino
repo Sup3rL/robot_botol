@@ -3,7 +3,7 @@
 #include <Bluepad32.h>
 
 // =====================================================================
-// ---------- Konfigurasi Pin & Objek Gamepad ----------
+// SECTION 1: Konfigurasi umum dan komunikasi UART
 // =====================================================================
 #define UART_RX 19
 #define UART_TX 23
@@ -18,13 +18,149 @@ ControllerPtr myControllers[BP32_MAX_GAMEPADS];
 const int STICK_DEADZONE = 120;
 unsigned long lastControlTxMs = 0;
 
-// =====================================================================
-// ---------- Pengiriman Paket Kontrol (UART JSON) ----------
-// =====================================================================
 
+// =====================================================================
+// SECTION 2: Encoder motor dan pin lifter
+// =====================================================================
+// Kanan depan
+#define En_Kn_dp_A 12
+#define En_Kn_dp_B 13
 
-// Fungsi untuk mengirim paket kontrol ke ESP32 1
-void sendControlPacket(bool up, bool down, bool left, bool right, bool l1, bool r1, bool y, bool a, bool x, bool b, bool dpadUsed, int mag) {
+// Kiri depan
+#define En_kr_dp_A 32
+#define En_kr_dp_B 33
+
+// Kanan belakang
+#define En_kn_bl_A 25
+#define En_kn_bl_B 26
+
+// Kiri belakang
+#define En_kr_bl_A 27
+#define En_kr_bl_B 14
+
+// Pin Lifter (Up/Down/Right/Left)
+#define LIFTER_UP    16
+#define LIFTER_DOWN  17
+#define LIFTER_RIGHT 18
+#define LIFTER_LEFT  4
+
+// =====================================================================
+// SECTION 3: Counter encoder dan state quadrature
+// =====================================================================
+volatile long count_Kn_dp = 0;
+volatile long count_kr_dp = 0;
+volatile long count_kn_bl = 0;
+volatile long count_kr_bl = 0;
+
+volatile uint8_t state_Kn_dp = 0;
+volatile uint8_t state_kr_dp = 0;
+volatile uint8_t state_kn_bl = 0;
+volatile uint8_t state_kr_bl = 0;
+
+const int8_t qdec[16] = {
+   0, -1,  1,  0,
+   1,  0,  0, -1,
+  -1,  0,  0,  1,
+   0,  1, -1,  0
+};
+
+// =====================================================================
+// SECTION 4: Kontrol lifter
+// =====================================================================
+void stopLifter() {
+  digitalWrite(LIFTER_UP, LOW);
+  digitalWrite(LIFTER_DOWN, LOW);
+  digitalWrite(LIFTER_RIGHT, LOW);
+  digitalWrite(LIFTER_LEFT, LOW);
+}
+
+void updateLifter(bool up, bool down, bool right, bool left) {
+  bool upCmd = up && !down;
+  bool dnCmd = down && !up;
+  bool rtCmd = right && !left;
+  bool lfCmd = left && !right;
+
+  digitalWrite(LIFTER_UP, upCmd ? HIGH : LOW);
+  digitalWrite(LIFTER_DOWN, dnCmd ? HIGH : LOW);
+  digitalWrite(LIFTER_RIGHT, rtCmd ? HIGH : LOW);
+  digitalWrite(LIFTER_LEFT, lfCmd ? HIGH : LOW);
+}
+
+// =====================================================================
+// SECTION 5: ISR encoder
+// =====================================================================
+void IRAM_ATTR isr_Kn_dp() {
+  uint8_t s = (digitalRead(En_Kn_dp_A) << 1) | digitalRead(En_Kn_dp_B);
+  count_Kn_dp += qdec[(state_Kn_dp << 2) | s];
+  state_Kn_dp = s;
+}
+
+void IRAM_ATTR isr_kr_dp() {
+  uint8_t s = (digitalRead(En_kr_dp_A) << 1) | digitalRead(En_kr_dp_B);
+  count_kr_dp += qdec[(state_kr_dp << 2) | s];
+  state_kr_dp = s;
+}
+
+void IRAM_ATTR isr_kn_bl() {
+  uint8_t s = (digitalRead(En_kn_bl_A) << 1) | digitalRead(En_kn_bl_B);
+  count_kn_bl += qdec[(state_kn_bl << 2) | s];
+  state_kn_bl = s;
+}
+
+void IRAM_ATTR isr_kr_bl() {
+  uint8_t s = (digitalRead(En_kr_bl_A) << 1) | digitalRead(En_kr_bl_B);
+  count_kr_bl += qdec[(state_kr_bl << 2) | s];
+  state_kr_bl = s;
+}
+
+// =====================================================================
+// SECTION 6: Setup board
+// =====================================================================
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(115200, SERIAL_8N1, UART_RX, UART_TX);
+  Serial.println("ESP32 2 siap: gamepad -> UART + encoder");
+
+  BP32.setup(&onConnectedController, &onDisconnectedController);
+  BP32.enableVirtualDevice(false);
+
+  pinMode(En_Kn_dp_A, INPUT);
+  pinMode(En_Kn_dp_B, INPUT);
+  pinMode(En_kr_dp_A, INPUT);
+  pinMode(En_kr_dp_B, INPUT);
+  pinMode(En_kn_bl_A, INPUT);
+  pinMode(En_kn_bl_B, INPUT);
+  pinMode(En_kr_bl_A, INPUT);
+  pinMode(En_kr_bl_B, INPUT);
+
+  pinMode(LIFTER_UP, OUTPUT);
+  pinMode(LIFTER_DOWN, OUTPUT);
+  pinMode(LIFTER_RIGHT, OUTPUT);
+  pinMode(LIFTER_LEFT, OUTPUT);
+  stopLifter();
+
+  state_Kn_dp = (digitalRead(En_Kn_dp_A) << 1) | digitalRead(En_Kn_dp_B);
+  state_kr_dp = (digitalRead(En_kr_dp_A) << 1) | digitalRead(En_kr_dp_B);
+  state_kn_bl = (digitalRead(En_kn_bl_A) << 1) | digitalRead(En_kn_bl_B);
+  state_kr_bl = (digitalRead(En_kr_bl_A) << 1) | digitalRead(En_kr_bl_B);
+
+  attachInterrupt(digitalPinToInterrupt(En_Kn_dp_A), isr_Kn_dp, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(En_Kn_dp_B), isr_Kn_dp, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(En_kr_dp_A), isr_kr_dp, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(En_kr_dp_B), isr_kr_dp, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(En_kn_bl_A), isr_kn_bl, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(En_kn_bl_B), isr_kn_bl, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(En_kr_bl_A), isr_kr_bl, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(En_kr_bl_B), isr_kr_bl, CHANGE);
+
+  Serial.println("ESP32 4 Motor Encoder Counter");
+}
+// =====================================================================
+// SECTION 7: Paket kontrol ke ESP1
+// =====================================================================
+void sendControlPacket(bool up, bool down, bool left, bool right,
+                      bool l1, bool r1, bool y, bool a,
+                      bool x, bool b, bool dpadUsed, int mag) {
   JsonDocument doc;
   doc["src"]   = "esp2";
   doc["up"]    = up;
@@ -51,7 +187,7 @@ void sendStopPacket() {
 }
 
 // =====================================================================
-// ---------- Bluepad32 Callbacks & Handler ----------
+// SECTION 8: Manajemen gamepad Bluepad32
 // =====================================================================
 void onConnectedController(ControllerPtr ctl) {
   for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
@@ -77,7 +213,11 @@ void onDisconnectedController(ControllerPtr ctl) {
   }
 }
 
+// =====================================================================
+// SECTION 9: Mapping kontrol gamepad ke perintah robot
+// =====================================================================
 void processAndSendGamepad(ControllerPtr ctl) {
+  // D-pad dan joystick kiri = kontrol robot utama
   uint8_t d = ctl->dpad();
   bool dUp    = d & DPAD_UP;
   bool dDown  = d & DPAD_DOWN;
@@ -109,154 +249,30 @@ void processAndSendGamepad(ControllerPtr ctl) {
   bool left  = dLeft || jLeft;
   bool right = dRight || jRight;
 
-  sendControlPacket(up, down, left, right, ctl->l1(), ctl->r1(), ctl->y(), ctl->a(), ctl->x(), ctl->b(), dpadUsed, mag);
+  // Joystick kanan = kontrol lifter
+  // Arah:
+  // - RY < -deadzone  => lifter naik
+  // - RY > +deadzone  => lifter turun
+  // - RX < -deadzone  => lifter kiri
+  // - RX > +deadzone  => lifter kanan
+  int rx = ctl->axisRX();
+  int ry = ctl->axisRY();
+  bool liftUp    = (ry < -STICK_DEADZONE);
+  bool liftDown  = (ry >  STICK_DEADZONE);
+  bool liftLeft  = (rx < -STICK_DEADZONE);
+  bool liftRight = (rx >  STICK_DEADZONE);
+  updateLifter(liftUp, liftDown, liftRight, liftLeft);
+
+  // Tombol X/B tetap dipakai untuk gripper di ESP1, jadi tidak saling overwrite
+  sendControlPacket(up, down, left, right,
+                    ctl->l1(), ctl->r1(),
+                    ctl->y(), ctl->a(),
+                    ctl->x(), ctl->b(),
+                    dpadUsed, mag);
 }
 
 // =====================================================================
-// ---------- Pin Encoder & Lifter ----------
-// =====================================================================
-
-// Kanan depan
-#define En_Kn_dp_A 12
-#define En_Kn_dp_B 13
-
-// Kiri depan
-#define En_kr_dp_A 32
-#define En_kr_dp_B 33
-
-// Kanan belakang
-#define En_kn_bl_A 25
-#define En_kn_bl_B 26
-
-// Kiri belakang
-#define En_kr_bl_A 27
-#define En_kr_bl_B 14
-
-// Pin Lifter (Up/Down/Right/Left)
-#define LIFTER_UP    16
-#define LIFTER_DOWN  17
-#define LIFTER_RIGHT 18
-#define LIFTER_LEFT  4
-
-// =====================================================================
-// ---------- Counter & Quadrature Decoder ----------
-// =====================================================================
-volatile long count_Kn_dp = 0;
-volatile long count_kr_dp = 0;
-volatile long count_kn_bl = 0;
-volatile long count_kr_bl = 0;
-
-// State quadrature sebelumnya
-volatile uint8_t state_Kn_dp = 0;
-volatile uint8_t state_kr_dp = 0;
-volatile uint8_t state_kn_bl = 0;
-volatile uint8_t state_kr_bl = 0;
-
-// Tabel pembacaan quadrature
-const int8_t qdec[16] = {
-   0, -1,  1,  0,
-   1,  0,  0, -1,
-  -1,  0,  0,  1,
-   0,  1, -1,  0
-};
-
-// =====================================================================
-// ---------- Kontrol Lifter ----------
-// =====================================================================
-void stopLifter() {
-  digitalWrite(LIFTER_UP, LOW);
-  digitalWrite(LIFTER_DOWN, LOW);
-  digitalWrite(LIFTER_RIGHT, LOW);
-  digitalWrite(LIFTER_LEFT, LOW);
-}
-
-void updateLifter(bool up, bool down, bool right, bool left) {
-  // Hindari arah berlawanan aktif bersamaan
-  bool upCmd = up && !down;
-  bool dnCmd = down && !up;
-  bool rtCmd = right && !left;
-  bool lfCmd = left && !right;
-
-  digitalWrite(LIFTER_UP, upCmd ? HIGH : LOW);
-  digitalWrite(LIFTER_DOWN, dnCmd ? HIGH : LOW);
-  digitalWrite(LIFTER_RIGHT, rtCmd ? HIGH : LOW);
-  digitalWrite(LIFTER_LEFT, lfCmd ? HIGH : LOW);
-}
-
-// =====================================================================
-// ---------- Fungsi Interrupt (ISR) ----------
-// =====================================================================
-void IRAM_ATTR isr_Kn_dp() {
-  uint8_t s = (digitalRead(En_Kn_dp_A) << 1) | digitalRead(En_Kn_dp_B);
-  count_Kn_dp += qdec[(state_Kn_dp << 2) | s];
-  state_Kn_dp = s;
-}
-
-void IRAM_ATTR isr_kr_dp() {
-  uint8_t s = (digitalRead(En_kr_dp_A) << 1) | digitalRead(En_kr_dp_B);
-  count_kr_dp += qdec[(state_kr_dp << 2) | s];
-  state_kr_dp = s;
-}
-
-void IRAM_ATTR isr_kn_bl() {
-  uint8_t s = (digitalRead(En_kn_bl_A) << 1) | digitalRead(En_kn_bl_B);
-  count_kn_bl += qdec[(state_kn_bl << 2) | s];
-  state_kn_bl = s;
-}
-
-void IRAM_ATTR isr_kr_bl() {
-  uint8_t s = (digitalRead(En_kr_bl_A) << 1) | digitalRead(En_kr_bl_B);
-  count_kr_bl += qdec[(state_kr_bl << 2) | s];
-  state_kr_bl = s;
-}
-
-// =====================================================================
-// ---------- Setup ----------
-// =====================================================================
-void setup() {
-  Serial.begin(115200);
-  Serial1.begin(115200, SERIAL_8N1, UART_RX, UART_TX);
-  Serial.println("ESP32 2 siap: gamepad -> UART + encoder");
-
-  BP32.setup(&onConnectedController, &onDisconnectedController);
-  BP32.enableVirtualDevice(false);
-
-  pinMode(En_Kn_dp_A, INPUT);
-  pinMode(En_Kn_dp_B, INPUT);
-  pinMode(En_kr_dp_A, INPUT);
-  pinMode(En_kr_dp_B, INPUT);
-  pinMode(En_kn_bl_A, INPUT);
-  pinMode(En_kn_bl_B, INPUT);
-  pinMode(En_kr_bl_A, INPUT);
-  pinMode(En_kr_bl_B, INPUT);
-
-  pinMode(LIFTER_UP, OUTPUT);
-  pinMode(LIFTER_DOWN, OUTPUT);
-  pinMode(LIFTER_RIGHT, OUTPUT);
-  pinMode(LIFTER_LEFT, OUTPUT);
-  stopLifter();
-
-  // Simpan kondisi awal semua channel
-  state_Kn_dp = (digitalRead(En_Kn_dp_A) << 1) | digitalRead(En_Kn_dp_B);
-  state_kr_dp = (digitalRead(En_kr_dp_A) << 1) | digitalRead(En_kr_dp_B);
-  state_kn_bl = (digitalRead(En_kn_bl_A) << 1) | digitalRead(En_kn_bl_B);
-  state_kr_bl = (digitalRead(En_kr_bl_A) << 1) | digitalRead(En_kr_bl_B);
-
-  // Interrupt kedua channel setiap encoder
-  attachInterrupt(digitalPinToInterrupt(En_Kn_dp_A), isr_Kn_dp, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(En_Kn_dp_B), isr_Kn_dp, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(En_kr_dp_A), isr_kr_dp, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(En_kr_dp_B), isr_kr_dp, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(En_kn_bl_A), isr_kn_bl, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(En_kn_bl_B), isr_kn_bl, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(En_kr_bl_A), isr_kr_bl, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(En_kr_bl_B), isr_kr_bl, CHANGE);
-
-  Serial.println("ESP32 4 Motor Encoder Counter");
-}
-
-// =====================================================================
-// ---------- Main Loop ----------
+// SECTION 10: Loop utama
 // =====================================================================
 void loop() {
   BP32.update();
@@ -264,10 +280,6 @@ void loop() {
   bool sent = false;
   for (auto ctl : myControllers) {
     if (ctl && ctl->isConnected() && ctl->isGamepad()) {
-      // Mapping lifter lokal ESP2:
-      // Y = up, A = down, B = right, X = left
-      updateLifter(ctl->y(), ctl->a(), ctl->b(), ctl->x());
-
       if (millis() - lastControlTxMs >= 20) {
         processAndSendGamepad(ctl);
         lastControlTxMs = millis();
@@ -289,7 +301,6 @@ void loop() {
 
     long kn_dp, kr_dp, kn_bl, kr_bl;
 
-    // Baca counter dengan aman
     noInterrupts();
     kn_dp = count_Kn_dp;
     kr_dp = count_kr_dp;
