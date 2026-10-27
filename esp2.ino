@@ -21,6 +21,9 @@ unsigned long lastControlTxMs = 0;
 // =====================================================================
 // ---------- Pengiriman Paket Kontrol (UART JSON) ----------
 // =====================================================================
+
+
+// Fungsi untuk mengirim paket kontrol ke ESP32 1
 void sendControlPacket(bool up, bool down, bool left, bool right, bool l1, bool r1, bool y, bool a, bool x, bool b, bool dpadUsed, int mag) {
   JsonDocument doc;
   doc["src"]   = "esp2";
@@ -158,6 +161,29 @@ const int8_t qdec[16] = {
 };
 
 // =====================================================================
+// ---------- Kontrol Lifter ----------
+// =====================================================================
+void stopLifter() {
+  digitalWrite(LIFTER_UP, LOW);
+  digitalWrite(LIFTER_DOWN, LOW);
+  digitalWrite(LIFTER_RIGHT, LOW);
+  digitalWrite(LIFTER_LEFT, LOW);
+}
+
+void updateLifter(bool up, bool down, bool right, bool left) {
+  // Hindari arah berlawanan aktif bersamaan
+  bool upCmd = up && !down;
+  bool dnCmd = down && !up;
+  bool rtCmd = right && !left;
+  bool lfCmd = left && !right;
+
+  digitalWrite(LIFTER_UP, upCmd ? HIGH : LOW);
+  digitalWrite(LIFTER_DOWN, dnCmd ? HIGH : LOW);
+  digitalWrite(LIFTER_RIGHT, rtCmd ? HIGH : LOW);
+  digitalWrite(LIFTER_LEFT, lfCmd ? HIGH : LOW);
+}
+
+// =====================================================================
 // ---------- Fungsi Interrupt (ISR) ----------
 // =====================================================================
 void IRAM_ATTR isr_Kn_dp() {
@@ -204,6 +230,12 @@ void setup() {
   pinMode(En_kr_bl_A, INPUT);
   pinMode(En_kr_bl_B, INPUT);
 
+  pinMode(LIFTER_UP, OUTPUT);
+  pinMode(LIFTER_DOWN, OUTPUT);
+  pinMode(LIFTER_RIGHT, OUTPUT);
+  pinMode(LIFTER_LEFT, OUTPUT);
+  stopLifter();
+
   // Simpan kondisi awal semua channel
   state_Kn_dp = (digitalRead(En_Kn_dp_A) << 1) | digitalRead(En_Kn_dp_B);
   state_kr_dp = (digitalRead(En_kr_dp_A) << 1) | digitalRead(En_kr_dp_B);
@@ -224,66 +256,18 @@ void setup() {
 }
 
 // =====================================================================
-// ---------- Uji Komunikasi Serial ESP32 ----------
-// =====================================================================
-void komunikasi_test() {
-  if (millis() - lastSend >= 1000) {
-    lastSend = millis();
-
-    JsonDocument doc;
-    doc["device"] = "ESP32_2";
-    doc["counter"] = counter++;
-    doc["value"] = 200;
-    doc["status"] = "online";
-
-    serializeJson(doc, Serial1);
-    Serial1.println();
-
-    Serial.print("KIRIM: ");
-    serializeJson(doc, Serial);
-    Serial.println();
-  }
-
-  // TERIMA JSON dari ESP32 1
-  while (Serial1.available()) {
-    char c = Serial1.read();
-
-    if (c == '\n') {
-      JsonDocument doc;
-      DeserializationError err =
-          deserializeJson(doc, rxBuffer);
-
-      if (!err) {
-        Serial.print("TERIMA: ");
-        serializeJson(doc, Serial);
-        Serial.println();
-      } else {
-        Serial.println("JSON tidak valid");
-      }
-
-      rxBuffer = "";
-    } else if (c != '\r') {
-      if (rxBuffer.length() < 250) {
-        rxBuffer += c;
-      } else {
-        rxBuffer = "";
-      }
-    }
-  }
-}
-
-// =====================================================================
 // ---------- Main Loop ----------
 // =====================================================================
 void loop() {
   BP32.update();
 
-  // Proses penerimaan data serial UART non-blocking
-  komunikasi_test();
-
   bool sent = false;
   for (auto ctl : myControllers) {
     if (ctl && ctl->isConnected() && ctl->isGamepad()) {
+      // Mapping lifter lokal ESP2:
+      // Y = up, A = down, B = right, X = left
+      updateLifter(ctl->y(), ctl->a(), ctl->b(), ctl->x());
+
       if (millis() - lastControlTxMs >= 20) {
         processAndSendGamepad(ctl);
         lastControlTxMs = millis();
@@ -295,6 +279,7 @@ void loop() {
 
   if (!sent && millis() - lastControlTxMs >= 100) {
     sendStopPacket();
+    stopLifter();
     lastControlTxMs = millis();
   }
 

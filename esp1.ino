@@ -39,6 +39,7 @@ Adafruit_PWMServoDriver servo = Adafruit_PWMServoDriver(); // PCA9685 di 0x40
 String uartLine;
 unsigned long lastRemoteMs = 0;
 const unsigned long REMOTE_TIMEOUT_MS = 250;
+unsigned long lastLinkWarnMs = 0;
 
 // =====================================================================
 // ---------- Konfigurasi PWM & Tuning Joystick ----------
@@ -67,11 +68,19 @@ int channelFor(int pin) {
   }
 }
 
+void pwmWriteMotor(int enPin, int duty) {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  ledcWrite(enPin, duty);
+#else
+  ledcWrite(channelFor(enPin), duty);
+#endif
+}
+
 // =====================================================================
 // ---------- Motor & Movement Helper ----------
 // =====================================================================
 void motor(int en, int pin_maju, int pin_mundur, int duty, int status_maju, int status_mundur) {
-  ledcWrite(channelFor(en), duty);
+  pwmWriteMotor(en, duty);
   digitalWrite(pin_maju, status_maju);
   digitalWrite(pin_mundur, status_mundur);
 }
@@ -287,6 +296,9 @@ void handleRemoteSerial() {
       uartLine = "";
       if (err) continue;
 
+      const char* src = doc["src"] | "";
+      if (strcmp(src, "esp2") != 0) continue;
+
       bool up    = doc["up"]   | false;
       bool down  = doc["down"] | false;
       bool left  = doc["left"] | false;
@@ -303,6 +315,9 @@ void handleRemoteSerial() {
       mag = constrain(mag, 0, 512);
       applyRemoteControl(up, down, left, right, l1, r1, y, a, x, b, mag, dpad);
       lastRemoteMs = millis();
+
+      Serial.printf("RX esp2 | U:%d D:%d L:%d R:%d L1:%d R1:%d X:%d B:%d Mag:%d Dpad:%d\n",
+                    up, down, left, right, l1, r1, x, b, mag, dpad);
     } else {
       if (uartLine.length() < 255) uartLine += c;
     }
@@ -361,60 +376,8 @@ void handleSerialTuning() {
 }
 
 void komunikasi_test() {
-    // KIRIM JSON setiap 1 detik
-  while (Serial1.available()) {
-    char c = Serial1.read();
-
-    if (c == '\n') {
-      JsonDocument doc;
-      DeserializationError err =
-          deserializeJson(doc, rxBuffer);
-
-      if (!err && strcmp(doc["src"] | "", "esp2") == 0) {
-        up        = doc["up"]    | false;
-        down      = doc["down"]  | false;
-        left      = doc["left"]  | false;
-        right     = doc["right"] | false;
-        l1        = doc["l1"]    | false;
-        r1        = doc["r1"]    | false;
-        y         = doc["y"]     | false;
-        a         = doc["a"]     | false;
-        x         = doc["x"]     | false;
-        b         = doc["b"]     | false;
-        dpadUsed  = doc["dpad"]  | false;
-        mag       = constrain(
-          doc["mag"] | 0, 0, 512
-        );
-
-        lastPacketTime = millis();
-
-        Serial.printf(
-          "U:%d D:%d L:%d R:%d | L1:%d R1:%d | "
-          "Y:%d A:%d X:%d B:%d | Dpad:%d Mag:%d\n",
-          up, down, left, right,
-          l1, r1, y, a, x, b, dpadUsed, mag
-        );
-      }
-
-      rxBuffer = "";
-    } else if (c != '\r') {
-      if (rxBuffer.length() < 250) {
-        rxBuffer += c;
-      } else {
-        rxBuffer = "";
-      }
-    }
-  }
-
-  // Pengaman: jika komunikasi terputus,
-  // semua perintah remote dinonaktifkan.
-  if (millis() - lastPacketTime > 300) {
-    up = down = left = right = false;
-    l1 = r1 = false;
-    y = a = x = b = false;
-    dpadUsed = false;
-    mag = 0;
-  }
+  // Fungsi uji lama dinonaktifkan.
+  // Parsing paket UART aktif dilakukan oleh handleRemoteSerial().
 }
 
 // =====================================================================
@@ -445,12 +408,17 @@ void setup() {
   // Direction pins setup
   int outPins[] = {
     Dp_kn_mj, Dp_kn_md, Dp_kr_mj, Dp_kr_md,
-    Bl_kn_mj, Bl_kn_md, Bl_kr_mj, Bl_kr_md,
-    IN1, IN2
+    Bl_kn_mj, Bl_kn_md, Bl_kr_mj, Bl_kr_md
   };
   for (int p : outPins) pinMode(p, OUTPUT);
 
-  // PWM setup
+  // PWM setup (kompatibel ESP32 core v2 dan v3)
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  ledcAttach(Dp_kn_speed, frequency, resolution);
+  ledcAttach(Dp_kr_speed, frequency, resolution);
+  ledcAttach(Bl_kn_speed, frequency, resolution);
+  ledcAttach(Bl_kr_speed, frequency, resolution);
+#else
   ledcSetup(CH_ENA_Dp_kn, frequency, resolution);
   ledcSetup(CH_ENB_Dp_kr, frequency, resolution);
   ledcSetup(CH_ENA_Bl_kn, frequency, resolution);
@@ -460,8 +428,7 @@ void setup() {
   ledcAttachPin(Dp_kr_speed, CH_ENB_Dp_kr);
   ledcAttachPin(Bl_kn_speed, CH_ENA_Bl_kn);
   ledcAttachPin(Bl_kr_speed, CH_ENB_Bl_kr);
-
-  ledcWrite(CH_ena, 255);
+#endif
 
   stopped();
   Serial.println("Ready. Waiting remote control from ESP32 #2.");
@@ -472,6 +439,10 @@ void loop() {
   handleRemoteSerial();
 
   if (millis() - lastRemoteMs > REMOTE_TIMEOUT_MS) {
+    if (millis() - lastLinkWarnMs > 1000) {
+      lastLinkWarnMs = millis();
+      Serial.println("WARN: no packet from ESP2 (UART link timeout)");
+    }
     stopped();
     updateGripper(false, false);
   }
